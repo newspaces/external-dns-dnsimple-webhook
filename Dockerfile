@@ -10,5 +10,5 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/external-dns-dnsimple-webhook /external-dns-dnsimple-webhook
 
-USER nonroot:nonroot
+USER 65532:65532
 ENTRYPOINT ["/external-dns-dnsimple-webhook"]
