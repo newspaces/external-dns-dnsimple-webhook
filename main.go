@@ -49,6 +49,7 @@ type config struct {
 	Zone          string
 	DomainFilters []string
 	Token         string
+	TXTPrefix     string
 	WebhookAddr   string
 	HealthAddr    string
 }
@@ -59,6 +60,7 @@ type dnsimpleClient struct {
 	accountID  string
 	token      string
 	zone       string
+	txtPrefix  string
 }
 
 type dnsimpleRecord struct {
@@ -108,6 +110,7 @@ func main() {
 		accountID:  cfg.AccountID,
 		token:      cfg.Token,
 		zone:       cfg.Zone,
+		txtPrefix:  cfg.TXTPrefix,
 	}
 
 	if client.accountID == "" {
@@ -157,6 +160,7 @@ func loadConfig() (config, error) {
 		AccountID:   os.Getenv("DNSIMPLE_ACCOUNT_ID"),
 		Zone:        os.Getenv("DNSIMPLE_ZONE"),
 		Token:       os.Getenv("DNSIMPLE_OAUTH"),
+		TXTPrefix:   getenv("TXT_PREFIX", "_external-dns-"),
 		WebhookAddr: getenv("WEBHOOK_ADDR", "127.0.0.1:8888"),
 		HealthAddr:  getenv("HEALTH_ADDR", ":8080"),
 	}
@@ -270,14 +274,14 @@ func (c *dnsimpleClient) listEndpoints(ctx context.Context) ([]endpoint, error) 
 		return nil, err
 	}
 
-	return recordsToEndpoints(records, c.zone), nil
+	return recordsToEndpoints(records, c.zone, c.txtPrefix), nil
 }
 
-func recordsToEndpoints(records []dnsimpleRecord, zone string) []endpoint {
+func recordsToEndpoints(records []dnsimpleRecord, zone, txtPrefix string) []endpoint {
 	endpoints := make([]endpoint, 0, len(records))
 	endpointIndexes := make(map[string]int, len(records))
 	for _, record := range records {
-		ep, ok := recordToEndpoint(record, zone)
+		ep, ok := recordToEndpoint(record, zone, txtPrefix)
 		if ok {
 			key := endpointGroupKey(ep)
 			if index, exists := endpointIndexes[key]; exists {
@@ -300,8 +304,11 @@ func endpointGroupKey(ep endpoint) string {
 	}, "\x00")
 }
 
-func recordToEndpoint(record dnsimpleRecord, zone string) (endpoint, bool) {
+func recordToEndpoint(record dnsimpleRecord, zone, txtPrefix string) (endpoint, bool) {
 	dnsName := record.Name
+	if record.Type == "TXT" {
+		dnsName = normalizeSRVTXTName(dnsName, txtPrefix)
+	}
 	if dnsName == "" {
 		dnsName = zone
 	} else {
@@ -363,7 +370,7 @@ func (c *dnsimpleClient) createEndpoint(ctx context.Context, ep endpoint) error 
 	}
 
 	for _, target := range ep.Targets {
-		payload, err := endpointToPayload(ep, target, c.zone)
+		payload, err := endpointToPayload(ep, target, c.zone, c.txtPrefix)
 		if err != nil {
 			return err
 		}
@@ -383,13 +390,25 @@ func (c *dnsimpleClient) createEndpoint(ctx context.Context, ep endpoint) error 
 
 func (c *dnsimpleClient) deleteEndpoint(ctx context.Context, ep endpoint) error {
 	for _, target := range ep.Targets {
-		payload, err := endpointToPayload(ep, target, c.zone)
+		payload, err := endpointToPayload(ep, target, c.zone, c.txtPrefix)
 		if err != nil {
 			return err
 		}
 		record, ok, err := c.findRecord(ctx, payload)
 		if err != nil {
 			return err
+		}
+		if !ok && ep.RecordType == "TXT" {
+			rawPayload, rawErr := endpointToPayloadWithoutTXTNormalization(ep, target, c.zone)
+			if rawErr != nil {
+				return rawErr
+			}
+			if rawPayload.Name != payload.Name {
+				record, ok, err = c.findRecord(ctx, rawPayload)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		if !ok {
 			log.Printf("record not found for delete: %s %s -> %s", payload.Type, ep.DNSName, payload.Content)
@@ -403,10 +422,21 @@ func (c *dnsimpleClient) deleteEndpoint(ctx context.Context, ep endpoint) error 
 	return nil
 }
 
-func endpointToPayload(ep endpoint, target, zone string) (recordPayload, error) {
+func endpointToPayload(ep endpoint, target, zone, txtPrefix string) (recordPayload, error) {
+	return endpointToPayloadWithTXTNormalization(ep, target, zone, txtPrefix, true)
+}
+
+func endpointToPayloadWithoutTXTNormalization(ep endpoint, target, zone string) (recordPayload, error) {
+	return endpointToPayloadWithTXTNormalization(ep, target, zone, "", false)
+}
+
+func endpointToPayloadWithTXTNormalization(ep endpoint, target, zone, txtPrefix string, normalizeTXT bool) (recordPayload, error) {
 	name, err := relativeName(ep.DNSName, zone)
 	if err != nil {
 		return recordPayload{}, err
+	}
+	if normalizeTXT && ep.RecordType == "TXT" {
+		name = normalizeSRVTXTName(name, txtPrefix)
 	}
 
 	payload := recordPayload{
@@ -428,6 +458,13 @@ func endpointToPayload(ep endpoint, target, zone string) (recordPayload, error) 
 	}
 
 	return payload, nil
+}
+
+func normalizeSRVTXTName(name, txtPrefix string) string {
+	if txtPrefix == "" {
+		return name
+	}
+	return strings.Replace(name, txtPrefix+"srv-", txtPrefix, 1)
 }
 
 func relativeName(dnsName, zone string) (string, error) {

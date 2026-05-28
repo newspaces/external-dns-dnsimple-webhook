@@ -30,7 +30,7 @@ func TestEndpointToPayloadSRV(t *testing.T) {
 		},
 	}
 
-	payload, err := endpointToPayload(ep, ep.Targets[0], "example.com")
+	payload, err := endpointToPayload(ep, ep.Targets[0], "example.com", "_external-dns-")
 	if err != nil {
 		t.Fatalf("endpointToPayload returned error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestRecordToEndpointSRV(t *testing.T) {
 		Content:  "50 47027 db-0.mongodb.apps.example.com",
 		TTL:      60,
 		Priority: &priority,
-	}, "example.com")
+	}, "example.com", "_external-dns-")
 	if !ok {
 		t.Fatal("record was not converted")
 	}
@@ -95,13 +95,39 @@ func TestRecordsToEndpointsGroupsTargets(t *testing.T) {
 			TTL:      60,
 			Priority: &priority,
 		},
-	}, "example.com")
+	}, "example.com", "_external-dns-")
 
 	if len(endpoints) != 1 {
 		t.Fatalf("expected one grouped endpoint, got %#v", endpoints)
 	}
 	if len(endpoints[0].Targets) != 2 {
 		t.Fatalf("unexpected grouped targets: %#v", endpoints[0].Targets)
+	}
+}
+
+func TestNormalizeSRVTXTName(t *testing.T) {
+	name := "_external-dns-srv-_mongodb._tcp.mongodb.apps"
+	normalized := normalizeSRVTXTName(name, "_external-dns-")
+	if normalized != "_external-dns-_mongodb._tcp.mongodb.apps" {
+		t.Fatalf("unexpected normalized name: %s", normalized)
+	}
+}
+
+func TestEndpointToPayloadNormalizesSRVTXTName(t *testing.T) {
+	ep := endpoint{
+		DNSName:    "_external-dns-srv-_mongodb._tcp.mongodb.apps.example.com",
+		RecordType: "TXT",
+		Targets: []string{
+			"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name",
+		},
+	}
+
+	payload, err := endpointToPayload(ep, ep.Targets[0], "example.com", "_external-dns-")
+	if err != nil {
+		t.Fatalf("endpointToPayload returned error: %v", err)
+	}
+	if payload.Name != "_external-dns-_mongodb._tcp.mongodb.apps" {
+		t.Fatalf("unexpected payload name: %s", payload.Name)
 	}
 }
 
