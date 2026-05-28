@@ -279,21 +279,62 @@ func (c *dnsimpleClient) listEndpoints(ctx context.Context) ([]endpoint, error) 
 }
 
 func recordsToEndpoints(records []dnsimpleRecord, zone, txtPrefix string) []endpoint {
-	endpoints := make([]endpoint, 0, len(records))
-	endpointIndexes := make(map[string]int, len(records))
+	converted := make([]endpoint, 0, len(records))
+	txtSetIdentifiersByDNSName := make(map[string][]string)
 	for _, record := range records {
 		ep, ok := recordToEndpoint(record, zone, txtPrefix)
-		if ok {
-			key := endpointGroupKey(ep)
-			if index, exists := endpointIndexes[key]; exists {
-				endpoints[index].Targets = append(endpoints[index].Targets, ep.Targets...)
-				continue
-			}
-			endpointIndexes[key] = len(endpoints)
-			endpoints = append(endpoints, ep)
+		if !ok {
+			continue
 		}
+		if ep.RecordType == "TXT" && ep.SetIdentifier != "" {
+			if ownedDNSName := ownedDNSNameFromTXT(ep.DNSName, zone, txtPrefix); ownedDNSName != "" {
+				txtSetIdentifiersByDNSName[ownedDNSName] = append(txtSetIdentifiersByDNSName[ownedDNSName], ep.SetIdentifier)
+			}
+		}
+		converted = append(converted, ep)
+	}
+
+	endpoints := make([]endpoint, 0, len(converted))
+	endpointIndexes := make(map[string]int, len(records))
+	for _, ep := range converted {
+		if ep.RecordType == "SRV" {
+			ep.SetIdentifier = srvSetIdentifierFromTXT(ep, txtSetIdentifiersByDNSName[ep.DNSName])
+		}
+
+		key := endpointGroupKey(ep)
+		if index, exists := endpointIndexes[key]; exists {
+			endpoints[index].Targets = append(endpoints[index].Targets, ep.Targets...)
+			continue
+		}
+		endpointIndexes[key] = len(endpoints)
+		endpoints = append(endpoints, ep)
 	}
 	return endpoints
+}
+
+func ownedDNSNameFromTXT(txtDNSName, zone, txtPrefix string) string {
+	name, err := relativeName(txtDNSName, zone)
+	if err != nil || !strings.HasPrefix(name, txtPrefix) {
+		return ""
+	}
+	ownedName := strings.TrimPrefix(name, txtPrefix)
+	ownedName = strings.TrimPrefix(ownedName, "srv-")
+	if ownedName == "" {
+		return zone
+	}
+	return ownedName + "." + strings.TrimSuffix(zone, ".")
+}
+
+func srvSetIdentifierFromTXT(ep endpoint, txtSetIdentifiers []string) string {
+	for _, setIdentifier := range txtSetIdentifiers {
+		if setIdentifier == ep.SetIdentifier {
+			return ep.SetIdentifier
+		}
+	}
+	if len(txtSetIdentifiers) == 1 {
+		return txtSetIdentifiers[0]
+	}
+	return ep.SetIdentifier
 }
 
 func endpointGroupKey(ep endpoint) string {

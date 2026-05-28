@@ -23,12 +23,12 @@ func TestParseSRVTarget(t *testing.T) {
 func TestEndpointToPayloadSRV(t *testing.T) {
 	ep := endpoint{
 		DNSName:    "_mongodb._tcp.mongodb.apps.example.com",
-	RecordType: "SRV",
-	RecordTTL:  60,
-	Targets: []string{
-		"0 50 47027 db-0.mongodb.apps.example.com.",
-	},
-}
+		RecordType: "SRV",
+		RecordTTL:  60,
+		Targets: []string{
+			"0 50 47027 db-0.mongodb.apps.example.com.",
+		},
+	}
 
 	payload, err := endpointToPayload(ep, ep.Targets[0], "example.com", "_external-dns-")
 	if err != nil {
@@ -108,6 +108,36 @@ func TestRecordsToEndpointsKeepsSRVTargetsSeparate(t *testing.T) {
 	}
 }
 
+func TestRecordsToEndpointsUsesTXTSetIdentifierForSingleSRV(t *testing.T) {
+	priority := 0
+	endpoints := recordsToEndpoints([]dnsimpleRecord{
+		{
+			Name:     "_mongodb._tcp.external-dns-test.apps",
+			Type:     "SRV",
+			Content:  "50 47027 external-dns-test.apps.example.com",
+			TTL:      60,
+			Priority: &priority,
+		},
+		{
+			Name:    "_external-dns-_mongodb._tcp.external-dns-test.apps",
+			Type:    "TXT",
+			Content: `"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name,external-dns/set-identifier=external-dns-test-mongodb"`,
+			TTL:     60,
+		},
+	}, "example.com", "_external-dns-")
+
+	var srv endpoint
+	for _, ep := range endpoints {
+		if ep.RecordType == "SRV" {
+			srv = ep
+			break
+		}
+	}
+	if srv.SetIdentifier != "external-dns-test-mongodb" {
+		t.Fatalf("unexpected SRV set identifier: %s", srv.SetIdentifier)
+	}
+}
+
 func TestNormalizeSRVTXTName(t *testing.T) {
 	name := "_external-dns-srv-_mongodb._tcp.mongodb.apps"
 	normalized := normalizeSRVTXTName(name, "_external-dns-")
@@ -118,8 +148,8 @@ func TestNormalizeSRVTXTName(t *testing.T) {
 
 func TestEndpointToPayloadNormalizesSRVTXTName(t *testing.T) {
 	ep := endpoint{
-		DNSName:    "_external-dns-srv-_mongodb._tcp.mongodb.apps.example.com",
-		RecordType: "TXT",
+		DNSName:       "_external-dns-srv-_mongodb._tcp.mongodb.apps.example.com",
+		RecordType:    "TXT",
 		SetIdentifier: "db-0",
 		Targets: []string{
 			`"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name"`,
