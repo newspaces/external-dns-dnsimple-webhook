@@ -270,14 +270,34 @@ func (c *dnsimpleClient) listEndpoints(ctx context.Context) ([]endpoint, error) 
 		return nil, err
 	}
 
+	return recordsToEndpoints(records, c.zone), nil
+}
+
+func recordsToEndpoints(records []dnsimpleRecord, zone string) []endpoint {
 	endpoints := make([]endpoint, 0, len(records))
+	endpointIndexes := make(map[string]int, len(records))
 	for _, record := range records {
-		ep, ok := recordToEndpoint(record, c.zone)
+		ep, ok := recordToEndpoint(record, zone)
 		if ok {
+			key := endpointGroupKey(ep)
+			if index, exists := endpointIndexes[key]; exists {
+				endpoints[index].Targets = append(endpoints[index].Targets, ep.Targets...)
+				continue
+			}
+			endpointIndexes[key] = len(endpoints)
 			endpoints = append(endpoints, ep)
 		}
 	}
-	return endpoints, nil
+	return endpoints
+}
+
+func endpointGroupKey(ep endpoint) string {
+	return strings.Join([]string{
+		ep.DNSName,
+		ep.RecordType,
+		ep.SetIdentifier,
+		strconv.Itoa(ep.RecordTTL),
+	}, "\x00")
 }
 
 func recordToEndpoint(record dnsimpleRecord, zone string) (endpoint, bool) {
@@ -346,6 +366,12 @@ func (c *dnsimpleClient) createEndpoint(ctx context.Context, ep endpoint) error 
 		payload, err := endpointToPayload(ep, target, c.zone)
 		if err != nil {
 			return err
+		}
+		if _, ok, err := c.findRecord(ctx, payload); err != nil {
+			return err
+		} else if ok {
+			log.Printf("record already exists: %s %s -> %s", payload.Type, ep.DNSName, payload.Content)
+			continue
 		}
 		log.Printf("creating %s %s -> %s", payload.Type, ep.DNSName, payload.Content)
 		if err := c.createRecord(ctx, payload); err != nil {

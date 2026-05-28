@@ -78,6 +78,33 @@ func TestRecordToEndpointSRV(t *testing.T) {
 	}
 }
 
+func TestRecordsToEndpointsGroupsTargets(t *testing.T) {
+	priority := 0
+	endpoints := recordsToEndpoints([]dnsimpleRecord{
+		{
+			Name:     "_mongodb._tcp.mongodb.apps",
+			Type:     "SRV",
+			Content:  "50 47027 db-0.mongodb.apps.example.com",
+			TTL:      60,
+			Priority: &priority,
+		},
+		{
+			Name:     "_mongodb._tcp.mongodb.apps",
+			Type:     "SRV",
+			Content:  "50 47027 db-1.mongodb.apps.example.com",
+			TTL:      60,
+			Priority: &priority,
+		},
+	}, "example.com")
+
+	if len(endpoints) != 1 {
+		t.Fatalf("expected one grouped endpoint, got %#v", endpoints)
+	}
+	if len(endpoints[0].Targets) != 2 {
+		t.Fatalf("unexpected grouped targets: %#v", endpoints[0].Targets)
+	}
+}
+
 func TestRelativeNameRejectsOutsideZone(t *testing.T) {
 	_, err := relativeName("other.test", "example.com")
 	if err == nil {
