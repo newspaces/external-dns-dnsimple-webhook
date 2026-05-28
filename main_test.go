@@ -23,12 +23,12 @@ func TestParseSRVTarget(t *testing.T) {
 func TestEndpointToPayloadSRV(t *testing.T) {
 	ep := endpoint{
 		DNSName:    "_mongodb._tcp.mongodb.apps.example.com",
-		RecordType: "SRV",
-		RecordTTL:  60,
-		Targets: []string{
-			"0 50 47027 db-0.mongodb.apps.example.com",
-		},
-	}
+	RecordType: "SRV",
+	RecordTTL:  60,
+	Targets: []string{
+		"0 50 47027 db-0.mongodb.apps.example.com.",
+	},
+}
 
 	payload, err := endpointToPayload(ep, ep.Targets[0], "example.com", "_external-dns-")
 	if err != nil {
@@ -76,9 +76,12 @@ func TestRecordToEndpointSRV(t *testing.T) {
 	if len(ep.Targets) != 1 || ep.Targets[0] != "0 50 47027 db-0.mongodb.apps.example.com" {
 		t.Fatalf("unexpected targets: %#v", ep.Targets)
 	}
+	if ep.SetIdentifier != "db-0" {
+		t.Fatalf("unexpected set identifier: %s", ep.SetIdentifier)
+	}
 }
 
-func TestRecordsToEndpointsGroupsTargets(t *testing.T) {
+func TestRecordsToEndpointsKeepsSRVTargetsSeparate(t *testing.T) {
 	priority := 0
 	endpoints := recordsToEndpoints([]dnsimpleRecord{
 		{
@@ -97,11 +100,11 @@ func TestRecordsToEndpointsGroupsTargets(t *testing.T) {
 		},
 	}, "example.com", "_external-dns-")
 
-	if len(endpoints) != 1 {
-		t.Fatalf("expected one grouped endpoint, got %#v", endpoints)
+	if len(endpoints) != 2 {
+		t.Fatalf("expected separate SRV endpoints, got %#v", endpoints)
 	}
-	if len(endpoints[0].Targets) != 2 {
-		t.Fatalf("unexpected grouped targets: %#v", endpoints[0].Targets)
+	if endpoints[0].SetIdentifier != "db-0" || endpoints[1].SetIdentifier != "db-1" {
+		t.Fatalf("unexpected set identifiers: %#v", endpoints)
 	}
 }
 
@@ -117,8 +120,9 @@ func TestEndpointToPayloadNormalizesSRVTXTName(t *testing.T) {
 	ep := endpoint{
 		DNSName:    "_external-dns-srv-_mongodb._tcp.mongodb.apps.example.com",
 		RecordType: "TXT",
+		SetIdentifier: "db-0",
 		Targets: []string{
-			"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name",
+			`"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name"`,
 		},
 	}
 
@@ -128,6 +132,24 @@ func TestEndpointToPayloadNormalizesSRVTXTName(t *testing.T) {
 	}
 	if payload.Name != "_external-dns-_mongodb._tcp.mongodb.apps" {
 		t.Fatalf("unexpected payload name: %s", payload.Name)
+	}
+	if payload.Content != `"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name,external-dns/set-identifier=db-0"` {
+		t.Fatalf("unexpected payload content: %s", payload.Content)
+	}
+}
+
+func TestRecordToEndpointTXTExtractsSetIdentifier(t *testing.T) {
+	ep, ok := recordToEndpoint(dnsimpleRecord{
+		Name:    "_external-dns-_mongodb._tcp.mongodb.apps",
+		Type:    "TXT",
+		Content: `"heritage=external-dns,external-dns/owner=development,external-dns/resource=crd/ns/name,external-dns/set-identifier=db-0"`,
+		TTL:     60,
+	}, "example.com", "_external-dns-")
+	if !ok {
+		t.Fatal("record was not converted")
+	}
+	if ep.SetIdentifier != "db-0" {
+		t.Fatalf("unexpected set identifier: %s", ep.SetIdentifier)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 )
 
 const mediaType = "application/external.dns.webhook+json;version=1"
+const txtSetIdentifierLabel = "external-dns/set-identifier"
 
 type endpoint struct {
 	DNSName          string                     `json:"dnsName"`
@@ -326,12 +327,19 @@ func recordToEndpoint(record dnsimpleRecord, zone, txtPrefix string) (endpoint, 
 
 	switch record.Type {
 	case "A", "AAAA", "CNAME", "TXT", "SRV":
-		return endpoint{
+		ep := endpoint{
 			DNSName:    dnsName,
 			RecordType: record.Type,
 			RecordTTL:  record.TTL,
 			Targets:    []string{target},
-		}, true
+		}
+		if record.Type == "SRV" {
+			ep.SetIdentifier = srvSetIdentifier(target)
+		}
+		if record.Type == "TXT" {
+			ep.SetIdentifier = txtSetIdentifier(target)
+		}
+		return ep, true
 	default:
 		return endpoint{}, false
 	}
@@ -438,6 +446,9 @@ func endpointToPayloadWithTXTNormalization(ep endpoint, target, zone, txtPrefix 
 	if normalizeTXT && ep.RecordType == "TXT" {
 		name = normalizeSRVTXTName(name, txtPrefix)
 	}
+	if normalizeTXT && ep.RecordType == "TXT" && ep.SetIdentifier != "" {
+		target = withTXTSetIdentifier(target, ep.SetIdentifier)
+	}
 
 	payload := recordPayload{
 		Name:    name,
@@ -454,7 +465,7 @@ func endpointToPayloadWithTXTNormalization(ep endpoint, target, zone, txtPrefix 
 			return recordPayload{}, err
 		}
 		payload.Priority = &srv.Priority
-		payload.Content = fmt.Sprintf("%d %d %s", srv.Weight, srv.Port, srv.Host)
+		payload.Content = fmt.Sprintf("%d %d %s", srv.Weight, srv.Port, strings.TrimSuffix(srv.Host, "."))
 	}
 
 	return payload, nil
@@ -465,6 +476,46 @@ func normalizeSRVTXTName(name, txtPrefix string) string {
 		return name
 	}
 	return strings.Replace(name, txtPrefix+"srv-", txtPrefix, 1)
+}
+
+func srvSetIdentifier(target string) string {
+	srv, err := parseSRVTarget(target)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSuffix(srv.Host, ".")
+	if host == "" {
+		return ""
+	}
+	return strings.Split(host, ".")[0]
+}
+
+func txtSetIdentifier(target string) string {
+	labels := strings.Split(unquoteTXTTarget(target), ",")
+	for _, label := range labels {
+		key, value, ok := strings.Cut(label, "=")
+		if ok && key == txtSetIdentifierLabel {
+			return value
+		}
+	}
+	return ""
+}
+
+func withTXTSetIdentifier(target, setIdentifier string) string {
+	wasQuoted := strings.HasPrefix(target, "\"") && strings.HasSuffix(target, "\"")
+	content := unquoteTXTTarget(target)
+	if txtSetIdentifier(content) != "" {
+		return target
+	}
+	content += "," + txtSetIdentifierLabel + "=" + setIdentifier
+	if wasQuoted {
+		return `"` + content + `"`
+	}
+	return content
+}
+
+func unquoteTXTTarget(target string) string {
+	return strings.Trim(strings.TrimSpace(target), `"`)
 }
 
 func relativeName(dnsName, zone string) (string, error) {
